@@ -8,10 +8,12 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const root = path.join(repositoryRoot, "skills");
 const errors = [];
+const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules"]);
 
 async function filesBelow(directory) {
   const result = [];
   for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    if (entry.isDirectory() && EXCLUDED_DIRECTORIES.has(entry.name)) continue;
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) result.push(...await filesBelow(target));
     else if (entry.isFile()) result.push(target);
