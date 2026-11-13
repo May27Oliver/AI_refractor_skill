@@ -149,11 +149,11 @@ function braceDelta(line) {
 }
 
 function functionStart(line) {
-  const arrow = line.match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=.*(?:async\s*)?\([^)]*\)\s*(?::[^=]+)?=>\s*\{/);
+  const arrow = line.match(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|[A-Za-z_$][\w$]*\s*=>)/);
   if (arrow) return arrow[1];
   const declared = line.match(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/);
   if (declared) return declared[1];
-  const method = line.match(/^\s*(?:(?:public|private|protected|static|readonly|abstract|override)\s+)*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\([^;]*\)\s*(?::[^={]+)?\s*\{/);
+  const method = line.match(/^\s*(?:(?:public|private|protected|static|readonly|abstract|override)\s+)*(?:async\s+)?([A-Za-z_$][\w$]*)\s*\(/);
   if (method && !new Set(["if", "for", "while", "switch", "catch", "with"]).has(method[1])) return method[1];
   return null;
 }
@@ -162,22 +162,49 @@ function plausibleBlockDeclaration(line, kind) {
   if (!line.trim()) return false;
   if (kind === "class") return /\bclass\s+[A-Za-z_$][\w$]*/.test(line);
   if (/\bfunction\s+[A-Za-z_$][\w$]*/.test(line)) return true;
-  if (/^\s*(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=/.test(line)) return true;
+  if (/^\s*(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:async\s*)?(?:\(|[A-Za-z_$][\w$]*\s*=>)/.test(line)) return true;
   return /^\s*(?:(?:public|private|protected|static|readonly|abstract|override)\s+)*(?:async\s+)?[A-Za-z_$][\w$]*\s*\(/.test(line);
 }
 
 function blockStart(lines, start, kind) {
   if (!plausibleBlockDeclaration(lines[start], kind)) return null;
-  let declaration = "";
-  const lastLine = Math.min(lines.length, start + 16);
+  if (kind === "class") {
+    let declaration = "";
+    const lastLine = Math.min(lines.length, start + 32);
+    for (let cursor = start; cursor < lastLine; cursor += 1) {
+      declaration += `${lines[cursor]} `;
+      const name = declaration.match(/\bclass\s+([A-Za-z_$][\w$]*)[^\{]*\{/)?.[1];
+      if (name) return { name, bodyLine: cursor, bodyColumn: lines[cursor].indexOf("{") };
+    }
+    return null;
+  }
+
+  const name = functionStart(lines[start]);
+  if (!name) return null;
+  const isArrow = /^\s*(?:export\s+)?(?:const|let|var)\b/.test(lines[start]);
+  let parenDepth = 0;
+  let sawParameters = false;
+  let parametersClosed = false;
+  let sawArrow = false;
+  const lastLine = Math.min(lines.length, start + 64);
   for (let cursor = start; cursor < lastLine; cursor += 1) {
-    declaration += `${lines[cursor]} `;
-    if (declaration.length > 4_000) return null;
-    const name = kind === "function"
-      ? functionStart(declaration)
-      : declaration.match(/\bclass\s+([A-Za-z_$][\w$]*)[^\{]*\{/)?.[1];
-    if (name) return name;
-    if (/;\s*$/.test(lines[cursor]) && !declaration.includes("=>")) return null;
+    const line = lines[cursor];
+    for (let column = 0; column < line.length; column += 1) {
+      const char = line[column];
+      const next = line[column + 1];
+      if (char === "(" ) {
+        parenDepth += 1;
+        sawParameters = true;
+      } else if (char === ")" && parenDepth > 0) {
+        parenDepth -= 1;
+        if (sawParameters && parenDepth === 0) parametersClosed = true;
+      } else if (parametersClosed && char === "=" && next === ">") {
+        sawArrow = true;
+        column += 1;
+      } else if (parametersClosed && parenDepth === 0 && char === "{" && (!isArrow || sawArrow)) {
+        return { name, bodyLine: cursor, bodyColumn: column };
+      }
+    }
   }
   return null;
 }
@@ -185,17 +212,19 @@ function blockStart(lines, start, kind) {
 function extractBlocks(lines, kind) {
   const blocks = [];
   for (let start = 0; start < lines.length; start += 1) {
-    const name = blockStart(lines, start, kind);
-    if (!name) continue;
+    const declaration = blockStart(lines, start, kind);
+    if (!declaration) continue;
 
     let balance = 0;
     let opened = false;
     let maxDepth = 0;
     let branches = 0;
     let cognitive = 0;
-    let end = start;
+    let end = declaration.bodyLine;
     for (; end < lines.length; end += 1) {
-      const line = lines[end];
+      const line = end === declaration.bodyLine
+        ? lines[end].slice(declaration.bodyColumn)
+        : lines[end];
       const depthBefore = balance;
       const delta = braceDelta(line);
       if (delta > 0) opened = true;
@@ -206,18 +235,71 @@ function extractBlocks(lines, kind) {
       if (controlCount) cognitive += controlCount * Math.max(1, depthBefore);
       if (opened && balance <= 0) break;
     }
-    if (opened) blocks.push({ name, start: start + 1, end: end + 1, maxDepth, branches, cognitive });
+    if (opened) blocks.push({
+      name: declaration.name,
+      start: start + 1,
+      end: end + 1,
+      bodyStart: declaration.bodyLine + 1,
+      maxDepth,
+      branches,
+      cognitive,
+    });
   }
   return blocks;
 }
 
-function parameterCount(line) {
-  const match = line.match(/\(([^()]*)\)/);
-  if (!match || !match[1].trim()) return 0;
-  return match[1].split(",").length;
+function parameterCount(lines, fn) {
+  const declaration = lines.slice(fn.start - 1, fn.bodyStart).join("\n");
+  const opening = declaration.indexOf("(");
+  if (opening < 0) return 0;
+
+  let parenDepth = 0;
+  let closing = -1;
+  for (let index = opening; index < declaration.length; index += 1) {
+    if (declaration[index] === "(") parenDepth += 1;
+    else if (declaration[index] === ")") {
+      parenDepth -= 1;
+      if (parenDepth === 0) {
+        closing = index;
+        break;
+      }
+    }
+  }
+  if (closing < 0) return 0;
+
+  const parameters = declaration.slice(opening + 1, closing);
+  let nestedParenDepth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let angleDepth = 0;
+  let segmentHasContent = false;
+  let count = 0;
+  for (const char of parameters) {
+    if (char === "(") nestedParenDepth += 1;
+    else if (char === ")" && nestedParenDepth > 0) nestedParenDepth -= 1;
+    else if (char === "{") braceDepth += 1;
+    else if (char === "}" && braceDepth > 0) braceDepth -= 1;
+    else if (char === "[") bracketDepth += 1;
+    else if (char === "]" && bracketDepth > 0) bracketDepth -= 1;
+    else if (char === "<") angleDepth += 1;
+    else if (char === ">" && angleDepth > 0) angleDepth -= 1;
+    else if (
+      char === "," &&
+      nestedParenDepth === 0 &&
+      braceDepth === 0 &&
+      bracketDepth === 0 &&
+      angleDepth === 0
+    ) {
+      if (segmentHasContent) count += 1;
+      segmentHasContent = false;
+      continue;
+    }
+    if (!/\s/.test(char)) segmentHasContent = true;
+  }
+  return count + (segmentHasContent ? 1 : 0);
 }
 
-function candidate(caseId, file, line, symbol, evidence, confidence, score) {
+function candidate(caseId, file, line, symbol, evidence, confidence, score, metrics = null) {
   const definition = caseById.get(caseId);
   return {
     caseId,
@@ -229,6 +311,7 @@ function candidate(caseId, file, line, symbol, evidence, confidence, score) {
     evidence,
     confidence,
     score,
+    metrics,
     related: definition.related,
   };
 }
@@ -249,6 +332,7 @@ function portableCandidate(item) {
       summary: item.evidence,
       detector: "heuristic",
       confidence: item.confidence,
+      metrics: item.metrics,
     },
     planningOptions: item.related.map((id) => ({ ...caseById.get(id) })),
     review: {
@@ -257,6 +341,9 @@ function portableCandidate(item) {
       falsePositiveCheck: null,
       behaviorRisks: [],
       testProtection: null,
+      responsibilityMap: [],
+      complexityTransferCheck: null,
+      verificationGaps: [],
     },
   };
 }
@@ -270,28 +357,36 @@ function scanFile(file, source, selectedIds) {
 
   for (const fn of functions) {
     const length = fn.end - fn.start + 1;
+    const metrics = {
+      lineStart: fn.start,
+      lineEnd: fn.end,
+      lineCount: length,
+      maxNesting: fn.maxDepth,
+      branchCount: fn.branches,
+      cognitiveComplexity: fn.cognitive,
+    };
     if (selectedIds.has("001") && length >= 60) {
-      results.push(candidate("001", relative, fn.start, fn.name, `Function spans ${length} lines (threshold: 60).`, "medium", length));
+      results.push(candidate("001", relative, fn.start, fn.name, `Function spans ${length} lines (threshold: 60).`, "medium", length, metrics));
     }
     if (selectedIds.has("004") && fn.maxDepth >= 5) {
-      results.push(candidate("004", relative, fn.start, fn.name, `Approximate block nesting depth is ${fn.maxDepth} (threshold: 5).`, "medium", fn.maxDepth * 10));
+      results.push(candidate("004", relative, fn.start, fn.name, `Approximate block nesting depth is ${fn.maxDepth} (threshold: 5).`, "medium", fn.maxDepth * 10, metrics));
     }
     if (selectedIds.has("007")) {
-      const count = parameterCount(lines[fn.start - 1]);
-      if (count >= 6) results.push(candidate("007", relative, fn.start, fn.name, `Declaration has approximately ${count} parameters (threshold: 6).`, "medium", count * 10));
+      const count = parameterCount(lines, fn);
+      if (count >= 6) results.push(candidate("007", relative, fn.start, fn.name, `Declaration has ${count} parameters (threshold: 6).`, "medium", count * 10, metrics));
     }
     if (selectedIds.has("088") && fn.branches >= 11) {
-      results.push(candidate("088", relative, fn.start, fn.name, `Approximate branch count is ${fn.branches} (review threshold: 11).`, "medium", fn.branches * 10));
+      results.push(candidate("088", relative, fn.start, fn.name, `Approximate branch count is ${fn.branches} (review threshold: 11).`, "medium", fn.branches * 10, metrics));
     }
     if (selectedIds.has("089") && fn.cognitive >= 16) {
-      results.push(candidate("089", relative, fn.start, fn.name, `Approximate nesting-weighted complexity is ${fn.cognitive} (review threshold: 16).`, "low", fn.cognitive));
+      results.push(candidate("089", relative, fn.start, fn.name, `Approximate nesting-weighted complexity is ${fn.cognitive} (review threshold: 16).`, "low", fn.cognitive, metrics));
     }
   }
 
   if (selectedIds.has("006")) {
     for (const item of classes) {
       const length = item.end - item.start + 1;
-      if (length >= 300) results.push(candidate("006", relative, item.start, item.name, `Class spans ${length} lines (threshold: 300).`, "low", length));
+      if (length >= 300) results.push(candidate("006", relative, item.start, item.name, `Class spans ${length} lines (threshold: 300).`, "low", length, { lineStart: item.start, lineEnd: item.end, lineCount: length }));
     }
   }
 
@@ -530,7 +625,7 @@ async function main() {
 
   const report = {
     schemaVersion: "1.0.0",
-    producer: { name: "refactor-scan", version: "0.2.0" },
+    producer: { name: "refactor-scan", version: "0.3.0" },
     scope: path.relative(process.cwd(), path.resolve(options.target)) || ".",
     generatedAt: new Date().toISOString(),
     filesScanned: scannedFiles.length,

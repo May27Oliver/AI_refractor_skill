@@ -95,3 +95,143 @@ ${body}
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
+
+test("scanner detects multiline methods with inline object parameter types", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "refactor-scan-inline-type-"));
+  try {
+    const body = Array.from({ length: 64 }, (_, index) => `    total += ${index + 3};`).join("\n");
+    await fs.writeFile(path.join(directory, "service.ts"), `
+class ExampleService {
+  private async commit(
+    input: {
+      first: number;
+      second: number;
+    },
+  ) {
+    let total = input.first + input.second;
+${body}
+    return total;
+  }
+}
+`);
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      scanner,
+      directory,
+      "--cases", "001,088,089",
+      "--format", "json",
+      "--max-candidates", "10",
+    ]);
+    const report = JSON.parse(stdout);
+    const candidate = report.candidates.find(
+      (item) => item.case.id === "001" && item.location.symbol === "commit",
+    );
+    assert.ok(candidate);
+    assert.equal(candidate.evidence.metrics.lineStart, 3);
+    assert.ok(candidate.evidence.metrics.lineCount >= 60);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("long-parameter scan ignores trailing commas and nested TypeScript type commas", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "refactor-scan-parameters-"));
+  try {
+    await fs.writeFile(path.join(directory, "service.ts"), `
+declare const TOKEN: symbol;
+declare function Inject(token: symbol): ParameterDecorator;
+
+class ExampleService {
+  constructor(
+    first: string,
+    second: number,
+    third: boolean,
+    @Inject(TOKEN) fourth: object,
+    fifth: Date,
+  ) {
+    return first;
+  }
+
+  private storeSignatures(
+    first: string,
+    second: Map<number, Buffer>,
+    third: Array<Record<string, number>>,
+    fourth: boolean,
+    fifth: Date,
+  ) {
+    return first;
+  }
+
+  private repeatedResult(
+    first: string,
+    second: { left: number; pair: [number, number] },
+    third: (left: number, right: number) => boolean,
+    fourth: Promise<Map<string, Array<number>>>,
+    fifth: Date,
+  ) {
+    return first;
+  }
+
+  private actualLongList(
+    first: string,
+    second: Map<number, Buffer>,
+    third: { left: number; right: number },
+    fourth: (left: number, right: number) => boolean,
+    fifth: [number, number],
+    sixth: Date,
+  ) {
+    return first;
+  }
+}
+`);
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      scanner,
+      directory,
+      "--cases", "007",
+      "--format", "json",
+      "--max-candidates", "10",
+    ]);
+    const report = JSON.parse(stdout);
+    assert.deepEqual(
+      report.candidates.map((item) => item.location.symbol),
+      ["actualLongList"],
+    );
+    assert.equal(
+      report.candidates[0].evidence.summary,
+      "Declaration has 6 parameters (threshold: 6).",
+    );
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("scanner does not treat local call assignments as functions", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "refactor-scan-local-call-"));
+  try {
+    await fs.writeFile(path.join(directory, "service.ts"), `
+class ExampleService {
+  run() {
+    const manager = this.getManager();
+    const result = values.map((value) => {
+      return value + 1;
+    });
+    return { manager, result };
+  }
+}
+`);
+
+    const { stdout } = await execFileAsync(process.execPath, [
+      scanner,
+      directory,
+      "--cases", "001,007,088,089",
+      "--format", "json",
+      "--max-candidates", "10",
+    ]);
+    const report = JSON.parse(stdout);
+    assert.ok(report.candidates.every((item) => item.location.symbol !== "manager"));
+    assert.ok(report.candidates.every((item) => item.location.symbol !== "result"));
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});

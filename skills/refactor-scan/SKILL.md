@@ -3,7 +3,7 @@ name: refactor-scan
 description: Scan a bounded JavaScript or TypeScript code scope for evidence-backed refactoring candidates. Use for scheduled or ad-hoc refactoring discovery without changing product code. Do not use to plan or implement refactors.
 compatibility: Requires Node.js 20.11 or newer, filesystem access, and JavaScript or TypeScript source files.
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Refactor Scan
@@ -16,7 +16,8 @@ Run a bounded, read-only discovery pass. A code smell is a candidate signal, not
 2. Choose one named pack or a small set of case IDs. Prefer a rotating pack for scheduled runs.
 3. Resolve this skill's root directory, then run `scripts/refactor-scan.mjs` from that root against one package, feature, or recent-change file set.
 4. Inspect only the highest-ranked results up to the requested review budget. Confirm the reported location, callers, tests, and likely false positives.
-5. Report confirmed candidates and rejected false positives. Do not modify product code or create implementation tickets during this skill.
+5. For each confirmed structural candidate, map its cohesive responsibilities and independent reasons to change. Identify existing and likely extracted symbols where complexity could be transferred.
+6. Report confirmed candidates and rejected false positives. Do not modify product code or create implementation tickets during this skill.
 
 Use the script rather than loading the full 100-case catalog into context:
 
@@ -32,6 +33,7 @@ Read [references/report-contract.md](references/report-contract.md) only when an
 
 - Default to one pack and one bounded source scope per run.
 - Treat heuristic results as leads. Never claim that a smell exists solely because a threshold fired.
+- Inspect the full symbol inventory after extraction. A lower score on the original symbol is not improvement when a new helper inherits the same mixed responsibilities.
 - Cap detailed inspection and final candidates separately; a useful default is 5 inspections and 3 confirmed candidates.
 - Preserve the user's existing worktree. The scanner itself is read-only.
 - Techniques and principles are catalog entries for planning, not repository-wide detection targets.
@@ -41,4 +43,4 @@ Read [references/report-contract.md](references/report-contract.md) only when an
 
 ## Completion
 
-A run is complete when the selected scope and cases were scanned, the top results were confirmed or rejected, and every reported candidate includes evidence, confidence, likely techniques, and known verification gaps.
+A run is complete when the selected scope and cases were scanned, the top results were confirmed or rejected, and every confirmed structural candidate includes evidence, confidence, a responsibility map, complexity-transfer targets, likely techniques, and known verification gaps.
