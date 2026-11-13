@@ -1,0 +1,6 @@
+interface:
+  display_name: "Refactor Scan"
+  short_description: "Scan bounded scopes for evidence-backed refactoring candidates"
+  default_prompt: "Use $refactor-scan to scan a bounded JavaScript or TypeScript scope for refactoring candidates without changing product code."
+policy:
+  allow_implicit_invocation: false

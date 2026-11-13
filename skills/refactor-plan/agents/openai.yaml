@@ -1,0 +1,6 @@
+interface:
+  display_name: "Refactor Plan"
+  short_description: "Turn confirmed refactoring candidates into approval-ready plans"
+  default_prompt: "Use $refactor-plan to evaluate confirmed candidates and produce a behavior-preserving plan for human approval."
+policy:
+  allow_implicit_invocation: false

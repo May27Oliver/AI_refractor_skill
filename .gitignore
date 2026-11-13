@@ -1,0 +1,14 @@
+node_modules/
+coverage/
+.DS_Store
+*.log
+
+.env
+.env.*
+!.env.example
+
+artifacts/
+reports/
+tmp/
+*.plan.json
+*.scan.json

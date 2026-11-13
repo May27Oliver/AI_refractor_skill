@@ -1,0 +1,13 @@
+{
+  "name": "refactor-agent-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs skills/*/scripts/*.test.mjs",
+    "validate": "node tests/validate-skills.mjs"
+  }
+}
